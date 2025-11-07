@@ -1,0 +1,50 @@
+[
+  {
+    "type": "Microsoft.SecurityInsights/dataConnectors",
+    "apiVersion": "2022-10-01-preview",
+    "name": "cveBusterVulnerabilitiesPoller",
+    "kind": "RestApiPoller",
+    "properties": {
+      "connectorDefinitionName": "cveBusterVulnerabilitiesConnector",
+      "dataType": "cveBusterVulnerabilities_CL",
+      "dcrConfig": {
+        "streamName": "Custom-cveBusterVulnerabilitiesStream",
+        "dataCollectionEndpoint": "[[parameters('dcrConfig').dataCollectionEndpoint]",
+        "dataCollectionRuleImmutableId": "[[parameters('dcrConfig').dataCollectionRuleImmutableId]"
+      },
+      "auth": {
+        "type": "APIKey",
+        "ApiKey": "[[parameters('apiKey')]",
+        "ApiKeyName": "Authorization"
+      },
+      "request": {
+        "apiEndpoint": "[[parameters('apiEndpoint')]",
+        "rateLimitQPS": 10,
+        "queryWindowInMin": 5,
+        "httpMethod": "GET",
+        "queryTimeFormat": "yyyy-MM-ddTHH:mm:ssZ",
+        "startTimeAttributeName": "createdAt__gt",
+        "endTimeAttributeName": "createdAt__lt",
+        "retryCount": 3,
+        "timeoutInSeconds": 60,
+        "headers": {
+          "Accept": "application/json",
+          "User-Agent": "cveBuster-Sentinel-Connector-Paginated/2.0"
+        }
+      },
+      "paging": {
+        "pagingType": "NextPageToken",
+        "nextPageTokenJsonPath": "$.next_token",
+        "NextPageParaName": "next_token",
+        "PageSize": "50",
+        "PageSizeParameterName": "page_size"
+      },
+      "response": {
+        "eventsJsonPaths": [
+          "$.data"
+        ],
+        "format": "json"
+      }
+    }
+  }
+]

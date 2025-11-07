@@ -1,152 +1,110 @@
-#!/usr/bin/env python3
-"""
-cveBuster Flask API - Paginated Version
-Demonstrates NextPageToken pagination for Microsoft Sentinel CCF testing
-"""
-
-from flask import Flask, jsonify, request
+from flask import Flask, request, jsonify
 import json
 import base64
+from datetime import datetime, timezone
 
 app = Flask(__name__)
 
-# Load vulnerability data
-with open('cvebuster_data.json', 'r') as f:
-    data = json.load(f)
-    # Handle both array and object with 'vulnerabilities' key
-    if isinstance(data, list):
-        ALL_VULNERABILITIES = data
-    else:
-        ALL_VULNERABILITIES = data.get('vulnerabilities', data.get('data', []))
+# API Key for authentication
+API_KEY = "cvebuster-demo-key-12345"
 
-# Configuration - Real-world pagination settings
-PAGE_SIZE = 50  # Standard API pagination size (typical: 25-100 records per page)
-VALID_API_KEY = 'cvebuster-demo-key-12345'
-
-
-def encode_cursor(offset):
-    """Encode offset as a base64 cursor token"""
-    return base64.b64encode(str(offset).encode()).decode()
-
-
-def decode_cursor(cursor):
-    """Decode base64 cursor token to offset"""
+def parse_iso_datetime(dt_str):
+    """Parse ISO 8601 datetime string to datetime object."""
     try:
-        return int(base64.b64decode(cursor).decode())
-    except:
-        return 0
+        # Handle both with and without 'Z' suffix
+        if dt_str.endswith('Z'):
+            dt_str = dt_str[:-1] + '+00:00'
+        return datetime.fromisoformat(dt_str)
+    except Exception as e:
+        print(f"Error parsing datetime '{dt_str}': {e}")
+        return None
 
+def filter_by_time_range(vulnerabilities, start_time_str=None, end_time_str=None):
+    """Filter vulnerabilities by LastModified time range."""
+    if not start_time_str and not end_time_str:
+        return vulnerabilities
+    
+    start_time = parse_iso_datetime(start_time_str) if start_time_str else None
+    end_time = parse_iso_datetime(end_time_str) if end_time_str else None
+    
+    filtered = []
+    for vuln in vulnerabilities:
+        last_modified = parse_iso_datetime(vuln.get('LastModified', ''))
+        if last_modified is None:
+            continue
+        
+        # Check if within time range
+        if start_time and last_modified <= start_time:
+            continue
+        if end_time and last_modified >= end_time:
+            continue
+        
+        filtered.append(vuln)
+    
+    return filtered
 
 @app.route('/api/vulnerabilities', methods=['GET'])
 def get_vulnerabilities():
     """
-    Paginated vulnerabilities endpoint
-    
-    Query Parameters:
-    - next_token: Cursor for pagination (base64 encoded offset)
-    
-    Response Format:
-    {
-      "data": [...],           # Current page of vulnerabilities
-      "next_token": "xyz",     # Token for next page (null if last page)
-      "total_count": 10,       # Total records available
-      "page_size": 5,          # Records per page
-      "current_offset": 0      # Current offset (for debugging)
-    }
+    Get vulnerabilities with pagination support.
+    Supports both 'next_token' and 'nextToken' parameter names.
+    Supports time filtering via createdAt__gt and createdAt__lt parameters.
     """
-    # Authentication
-    auth_header = request.headers.get('Authorization')
-    if not auth_header or auth_header != VALID_API_KEY:
-        return jsonify({'error': 'Unauthorized - Invalid API key'}), 401
+    # Check API key
+    auth_header = request.headers.get('Authorization', '')
+    if auth_header != API_KEY:
+        return jsonify({"error": "Unauthorized"}), 401
+    
+    # Load vulnerability data
+    try:
+        with open('cvebuster_data.json', 'r') as f:
+            all_vulnerabilities = json.load(f)
+    except FileNotFoundError:
+        return jsonify({"error": "Data file not found"}), 500
+    
+    # Get time filter parameters (SentinelOne pattern)
+    start_time = request.args.get('createdAt__gt')
+    end_time = request.args.get('createdAt__lt')
+    
+    # Filter by time range if provided
+    filtered_vulnerabilities = filter_by_time_range(all_vulnerabilities, start_time, end_time)
     
     # Get pagination parameters
-    next_token = request.args.get('next_token', None)
+    page_size = int(request.args.get('page_size', 50))
+    next_token_param = request.args.get('next_token') or request.args.get('nextToken')
     
-    # Decode cursor to get offset
-    offset = decode_cursor(next_token) if next_token else 0
+    # Decode offset from next_token (base64 encoded)
+    if next_token_param:
+        try:
+            offset = int(base64.b64decode(next_token_param).decode('utf-8'))
+        except:
+            offset = 0
+    else:
+        offset = 0
     
-    # Calculate pagination
-    total_count = len(ALL_VULNERABILITIES)
-    end_offset = offset + PAGE_SIZE
+    # Get paginated results
+    start_idx = offset
+    end_idx = offset + page_size
+    page_vulnerabilities = filtered_vulnerabilities[start_idx:end_idx]
     
-    # Get current page of data
-    page_data = ALL_VULNERABILITIES[offset:end_offset]
+    # Calculate next token
+    has_more = end_idx < len(filtered_vulnerabilities)
+    next_token = base64.b64encode(str(end_idx).encode('utf-8')).decode('utf-8') if has_more else None
     
-    # Determine if there's a next page
-    has_next_page = end_offset < total_count
-    next_page_token = encode_cursor(end_offset) if has_next_page else None
+    # Log pagination details
+    print(f"TimeFilter: {start_time} to {end_time}")
+    print(f"Offset: {offset}, Filtered Records: {len(filtered_vulnerabilities)}, Returned: {len(page_vulnerabilities)}, Has Next: {has_more}")
     
-    # Build response
+    # Return response
     response = {
-        'data': page_data,
-        'next_token': next_page_token,
-        'total_count': total_count,
-        'page_size': PAGE_SIZE,
-        'current_offset': offset,
-        'records_in_page': len(page_data)
+        "vulnerabilities": page_vulnerabilities,
+        "next_token": next_token,
+        "total_filtered": len(filtered_vulnerabilities),
+        "page_size": page_size,
+        "offset": offset
     }
     
-    # Log request for debugging
-    print(f"[API] Request - Offset: {offset}, Page Size: {PAGE_SIZE}, Records Returned: {len(page_data)}, Has Next: {has_next_page}")
-    
-    return jsonify(response), 200
-
-
-@app.route('/api/health', methods=['GET'])
-def health_check():
-    """Health check endpoint"""
-    return jsonify({
-        'status': 'healthy',
-        'service': 'cveBuster API - Paginated',
-        'version': '2.0',
-        'total_vulnerabilities': len(ALL_VULNERABILITIES),
-        'page_size': PAGE_SIZE
-    }), 200
-
-
-@app.route('/api/stats', methods=['GET'])
-def get_stats():
-    """Statistics endpoint (no auth required for demo)"""
-    auth_header = request.headers.get('Authorization')
-    if not auth_header or auth_header != VALID_API_KEY:
-        return jsonify({'error': 'Unauthorized - Invalid API key'}), 401
-    
-    severity_counts = {}
-    for vuln in ALL_VULNERABILITIES:
-        severity = vuln.get('Severity', 'Unknown')
-        severity_counts[severity] = severity_counts.get(severity, 0) + 1
-    
-    return jsonify({
-        'total_vulnerabilities': len(ALL_VULNERABILITIES),
-        'severity_breakdown': severity_counts,
-        'page_size': PAGE_SIZE,
-        'total_pages': (len(ALL_VULNERABILITIES) + PAGE_SIZE - 1) // PAGE_SIZE
-    }), 200
-
+    return jsonify(response)
 
 if __name__ == '__main__':
-    print("=" * 70)
-    print("cveBuster API Server - PAGINATED VERSION (Real-world Config)")
-    print("=" * 70)
-    print(f"📊 Dataset Statistics:")
-    print(f"   Total Vulnerabilities: {len(ALL_VULNERABILITIES):,}")
-    print(f"   Page Size: {PAGE_SIZE} records per page")
-    print(f"   Total Pages: {(len(ALL_VULNERABILITIES) + PAGE_SIZE - 1) // PAGE_SIZE}")
-    print(f"   API Key: {VALID_API_KEY}")
-    print("=" * 70)
-    print("\n🌐 Endpoints:")
-    print("   GET /api/vulnerabilities?next_token=<token>  (paginated)")
-    print("   GET /api/health")
-    print("   GET /api/stats")
-    print("\n📖 Pagination Flow (Real-world Example):")
-    print("   1. First request: GET /api/vulnerabilities")
-    print(f"      → Returns {PAGE_SIZE} records + next_token")
-    print("   2. Next request: GET /api/vulnerabilities?next_token=<token>")
-    print(f"      → Returns next {PAGE_SIZE} records + next_token")
-    print("   3. Continue until next_token is null (last page)")
-    print("\n💡 Typical real-world pagination: 25-100 records per page")
-    print("=" * 70)
-    print(f"\n🚀 Starting server on http://0.0.0.0:5000")
-    print("Press Ctrl+C to stop\n")
-    
     app.run(host='0.0.0.0', port=5000, debug=True)
